@@ -1,0 +1,176 @@
+﻿@page
+@model PostPageModel
+@{
+    ViewData["Title"] = "Post Management";
+}
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>@ViewData["Title"]</title>
+    <script src="https://ajax.aspnetcdn.com/ajax/jQuery/jquery-3.6.0.min.js"></script>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        input, textarea, select { display: block; margin-bottom: 10px; }
+    </style>
+</head>
+<body>
+    <h2>@ViewData["Title"]</h2>
+
+    <div>
+        <input type="text" id="title" placeholder="Title" />
+        <textarea id="content" placeholder="Content"></textarea>
+        <select id="categoryId">
+            @foreach (var category in Model.Categories)
+            {
+                <option value="@category.Id">@category.Name</option>
+            }
+        </select>
+        <input type="text" id="tags" placeholder="Tags (comma separated)" />
+        <button onclick="createPost()">Create Post</button>
+    </div>
+
+    <div id="postList">
+        <h3>Posts</h3>
+        <ul id="posts">
+            <!-- List of posts will be appended here by JavaScript -->
+        </ul>
+    </div>
+
+    <script>
+        $(document).ready(function () {
+            loadPosts();
+        });
+
+        function loadPosts() {
+            $.ajax({
+                type: "GET",
+                url: "/api/posts",
+                success: function (posts) {
+                    $("#posts").empty();
+                    posts.forEach(post => {
+                        $("#posts").append(`<li><strong>${post.title}</strong>: ${post.content}</li>`);
+                    });
+                }
+            });
+        }
+
+        function createPost() {
+            var postData = {
+                title: $("#title").val(),
+                content: $("#content").val(),
+                categoryId: $("#categoryId").val(),
+                tags: $("#tags").val().split(',').map(tag => tag.trim())
+            };
+
+            $.ajax({
+                type: "POST",
+                url: "/api/posts",
+                contentType: "application/json",
+                data: JSON.stringify(postData),
+                success: function () {
+                    loadPosts();
+                }
+            });
+        }
+    </script>
+    
+    @{
+        var dbContext = new ApplicationDbContext(new DbContextOptionsBuilder<ApplicationDbContext>()
+            .UseInMemoryDatabase("TestDb").Options);
+
+        if (Context.Request.Path == "/api/posts" && Context.Request.Method == "GET")
+        {
+            var posts = dbContext.Posts
+                                  .Include(p => p.Category)
+                                  .Include(p => p.PostTags)
+                                  .ThenInclude(pt => pt.Tag)
+                                  .ToList();
+
+            Context.Response.ContentType = "application/json";
+            Context.Response.WriteAsync(System.Text.Json.JsonSerializer.Serialize(posts.Select(p => new
+            {
+                p.Title,
+                p.Content
+            })));
+        }
+
+        if (Context.Request.Path == "/api/posts" && Context.Request.Method == "POST")
+        {
+            var postDto = System.Text.Json.JsonSerializer.Deserialize<PostDto>(await new StreamReader(Context.Request.Body).ReadToEndAsync());
+            
+            var tags = postDto.Tags.Select(tagName => new Tag { Name = tagName }).Distinct().ToList();
+            var existingTags = dbContext.Tags.Where(t => tags.Select(tag => tag.Name).Contains(t.Name)).ToList();
+
+            tags = tags.Where(t => !existingTags.Any(et => et.Name == t.Name)).ToList();
+            dbContext.Tags.AddRange(tags);
+
+            var post = new Post
+            {
+                Title = postDto.Title,
+                Content = postDto.Content,
+                CategoryId = postDto.CategoryId,
+                PostTags = tags.Select(tag => new PostTag { Tag = tag }).ToList()
+            };
+
+            dbContext.Posts.Add(post);
+            await dbContext.SaveChangesAsync();
+            Context.Response.StatusCode = 200;
+        }
+    }
+
+
+    @{
+        public class Post
+        {
+            public int Id { get; set; }
+            public string Title { get; set; }
+            public string Content { get; set; }
+            public int CategoryId { get; set; }
+            public Category Category { get; set; }
+            public ICollection<PostTag> PostTags { get; set; }
+        }
+
+        public class Category
+        {
+            public int Id { get; set; }
+            public string Name { get; set; }
+            public ICollection<Post> Posts { get; set; }
+        }
+
+        public class Tag
+        {
+            public int Id { get; set; }
+            public string Name { get; set; }
+            public ICollection<PostTag> PostTags { get; set; }
+        }
+
+        public class PostTag
+        {
+            public int PostId { get; set; }
+            public Post Post { get; set; }
+            public int TagId { get; set; }
+            public Tag Tag { get; set; }
+        }
+
+        public class PostDto
+        {
+            public string Title { get; set; }
+            public string Content { get; set; }
+            public int CategoryId { get; set; }
+            public List<string> Tags { get; set; }
+        }
+
+        public class ApplicationDbContext : DbContext
+        {
+            public ApplicationDbContext(DbContextOptions<ApplicationDbContext> options) : base(options) { }
+
+            public DbSet<Post> Posts { get; set; }
+            public DbSet<Category> Categories { get; set; }
+            public DbSet<Tag> Tags { get; set; }
+            public DbSet<PostTag> PostTags { get; set; }
+        }
+    }
+}
